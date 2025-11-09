@@ -1,0 +1,76 @@
+epg:
+  days: 2
+  output_file: "epg.xml"
+  # How often to refresh the EPG in the background, in hours.
+  refresh_interval_hours: 12
+
+publicity:
+  general_ads:
+    # Filter for ads between 15 seconds and 2 minutes
+    min_duration: 15
+    max_duration: 120
+    youtube_channels:
+      - "https://www.youtube.com/playlist?list=PL0E8CF42499A416D0"
+      - "https://www.youtube.com/@publi456"
+      - "https://www.youtube.com/@mamalucchettioficial"
+      - "https://www.youtube.com/@piensamarketing"
+      - "https://www.youtube.com/@quilmescerveza"
+
+channels:
+  - id: "news-channel"
+    name: "Global News"
+    group_title: "News"
+    quality: "best[height<=360]"
+    mixing_algorithm: "interleave"
+    sort_order: "oldest"
+    programs_per_publicity: 3
+    publicity_pool: "general_ads"
+    min_duration: 120
+    max_duration: 1200
+    output:
+      resolution: "640x360"
+      framerate: 30
+      video_bitrate: "1M"
+      audio_bitrate: "96k"
+    youtube_channels:
+      - "https://www.youtube.com/@BBCNews"
+      - "https://www.youtube.com/@CNN"
+      - "https://www.youtube.com/@AlJazeeraEnglish"
+
+  - id: "tech-channel"
+    name: "Tech Insights"
+    group_title: "Technology"
+    quality: "best[height<=1080]"
+    mixing_algorithm: "concatenate"
+    sort_order: "random"
+    programs_per_publicity: 5
+    publicity_pool: "general_ads"
+    min_duration: 300
+    max_duration: 1800
+    output:
+      resolution: "1920x1080"
+      framerate: 30
+      video_bitrate: "6M"
+      audio_bitrate: "256k"
+    youtube_channels:
+      - "https://www.youtube.com/@mkbhd"
+      - "https://www.youtube.com/@LinusTechTips"
+      - "https://www.youtube.com/@UnboxTherapy"
+
+  - id: "travel-channel"
+    name: "World Explorer"
+    group_title: "Travel"
+    quality: "best[height<=720]"
+    programs_per_publicity: 4
+    publicity_pool: "general_ads"
+    youtube_channels:
+      - "https://www.youtube.com/@KaraandNate"
+      - "https://www.youtube.com/@DrewBinsky"
+      - "https://www.youtube.com/@TheEndlessAdventure"
+
+  - id: "music-channel"
+    name: "Music Mix"
+    group_title: "Music"
+    quality: "bestaudio"
+    youtube_channels:
+      - "https://www.youtube.com/@Vevo"

@@ -1,0 +1,14 @@
+version: '3.8'
+services:
+  pseudotv:
+    build: .
+    container_name: pseudotv
+    ports:
+      - "5004:5004"
+    volumes:
+      # Mount your local config.yaml file to a path inside the container
+      - ./config.yaml:/app/config.yaml
+    environment:
+      # Tell the application where to find the config file
+      - PSEUDOTV_CONFIG_PATH=/app/config.yaml
+    restart: unless-stopped
