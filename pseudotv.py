@@ -54,30 +54,48 @@ def fetch_videos(channel_url, playlist_end, min_duration=None, max_duration=None
     }
 
     try:
+        print(f"[{datetime.datetime.now()}] Fetching from: {processed_url} (sort_order: {sort_order})")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             result = ydl.extract_info(processed_url, download=False)
             if 'entries' in result:
                 entries = result['entries']
+                print(f"[{datetime.datetime.now()}] Fetched {len(entries)} raw videos from {processed_url}")
                 if min_duration is not None:
+                    original_count = len(entries)
                     entries = [e for e in entries if e.get('duration', 0) >= min_duration]
+                    print(f"[{datetime.datetime.now()}] Filtered by min_duration ({min_duration}s): {len(entries)} videos remaining.")
                 if max_duration is not None:
+                    original_count = len(entries)
                     entries = [e for e in entries if e.get('duration', 0) <= max_duration]
+                    print(f"[{datetime.datetime.now()}] Filtered by max_duration ({max_duration}s): {len(entries)} videos remaining.")
                 if sort_order == 'oldest':
                     entries.reverse()
+                    print(f"[{datetime.datetime.now()}] Sorted by oldest.")
                 elif sort_order == 'random':
                     random.shuffle(entries)
+                    print(f"[{datetime.datetime.now()}] Shuffled randomly.")
                 return entries
     except Exception as e:
-        print(f"Error fetching from {processed_url}: {e}", file=sys.stderr)
+        print(f"[{datetime.datetime.now()}] Error fetching from {processed_url}: {e}", file=sys.stderr)
         if processed_url != channel_url:
-            print(f"Attempting fallback to original URL: {channel_url}", file=sys.stderr)
+            print(f"[{datetime.datetime.now()}] Attempting fallback to original URL: {channel_url}", file=sys.stderr)
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     result = ydl.extract_info(channel_url, download=False)
                     if 'entries' in result:
-                        return result['entries']
+                        entries = result['entries']
+                        print(f"[{datetime.datetime.now()}] Fetched {len(entries)} raw videos from fallback {channel_url}")
+                        if min_duration is not None:
+                            entries = [e for e in entries if e.get('duration', 0) >= min_duration]
+                        if max_duration is not None:
+                            entries = [e for e in entries if e.get('duration', 0) <= max_duration]
+                        if sort_order == 'oldest':
+                            entries.reverse()
+                        elif sort_order == 'random':
+                            random.shuffle(entries)
+                        return entries
             except Exception as e_fallback:
-                print(f"Error fetching from original URL {channel_url}: {e_fallback}", file=sys.stderr)
+                print(f"[{datetime.datetime.now()}] Error fetching from original URL {channel_url}: {e_fallback}", file=sys.stderr)
     return []
 
 def interleave_playlist(programs, publicity, programs_per_publicity):
@@ -135,6 +153,7 @@ def create_epg(config):
     # Preserve future programs and channel definitions from existing EPG
     existing_programs = {}
     if os.path.exists(output_file):
+        print(f"[{datetime.datetime.now()}] Found existing EPG file: {output_file}. Attempting to parse...")
         try:
             tree = ET.parse(output_file)
             root = tree.getroot()
@@ -146,8 +165,9 @@ def create_epg(config):
                     stop_time = datetime.datetime.strptime(program.get('stop'), '%Y%m%d%H%M%S %z')
                     if stop_time > now_utc:
                         existing_programs[channel_id].append(program)
+            print(f"[{datetime.datetime.now()}] Successfully parsed existing EPG. Preserved future programs for {len(existing_programs)} channels.")
         except ET.ParseError:
-            print(f"Could not parse existing EPG file: {output_file}. A new one will be created.", file=sys.stderr)
+            print(f"[{datetime.datetime.now()}] Could not parse existing EPG file: {output_file}. A new one will be created.", file=sys.stderr)
             existing_programs = {}
 
     for channel_config in all_channels:
@@ -158,11 +178,13 @@ def create_epg(config):
         if new_tv_element.find(f'.//channel[@id="{channel_id}"]') is None:
             channel_element = SubElement(new_tv_element, 'channel', id=channel_id)
             SubElement(channel_element, 'display-name').text = channel_name
+            print(f"[{datetime.datetime.now()}] Added new channel definition for '{channel_name}'.")
 
         # Add preserved future programs to the new EPG and find the last end time
         last_program_end_time = now_utc
         scheduled_video_ids = set()
         if channel_id in existing_programs:
+            print(f"[{datetime.datetime.now()}] Preserving future programs for channel '{channel_name}'...")
             for program in existing_programs[channel_id]:
                 new_tv_element.append(program)
                 video_src_element = program.find('video')
@@ -174,8 +196,9 @@ def create_epg(config):
                 stop_time = datetime.datetime.strptime(program.get('stop'), '%Y%m%d%H%M%S %z')
                 if stop_time > last_program_end_time:
                     last_program_end_time = stop_time
+            print(f"[{datetime.datetime.now()}] Preserved {len(existing_programs[channel_id])} programs for '{channel_name}'. Last program ends at {last_program_end_time}.")
 
-        print(f"Processing channel: {channel_name}. Preserved {len(scheduled_video_ids)} future programs. Generating new programs starting from {last_program_end_time}")
+        print(f"[{datetime.datetime.now()}] Processing channel: {channel_name}. Generating new programs starting from {last_program_end_time}")
         
         # Fetch all available videos
         all_available_videos = []
@@ -185,42 +208,55 @@ def create_epg(config):
         sort_order = channel_config.get('sort_order', 'newest')
         mixing_algorithm = channel_config.get('mixing_algorithm', 'concatenate')
         source_channels_videos = []
+        print(f"[{datetime.datetime.now()}] Fetching videos for '{channel_name}' from YouTube sources...")
         for yt_channel_url in channel_config.get('youtube_channels', []):
             source_channels_videos.append(fetch_videos(yt_channel_url, 50, min_duration, max_duration, 'newest'))
         
         # Mix available videos before filtering
         if mixing_algorithm == 'interleave':
+            print(f"[{datetime.datetime.now()}] Mixing videos for '{channel_name}' using 'interleave' algorithm.")
             max_len = max(len(v) for v in source_channels_videos) if source_channels_videos else 0
             for i in range(max_len):
                 for videos in source_channels_videos:
                     if i < len(videos):
                         all_available_videos.append(videos[i])
         else: # Default to 'concatenate'
+            print(f"[{datetime.datetime.now()}] Mixing videos for '{channel_name}' using 'concatenate' algorithm.")
             for videos in source_channels_videos:
                 all_available_videos.extend(videos)
 
         # Filter out already scheduled videos
+        original_count = len(all_available_videos)
         unscheduled_videos = [v for v in all_available_videos if v.get('id') not in scheduled_video_ids]
+        print(f"[{datetime.datetime.now()}] Filtered {original_count - len(unscheduled_videos)} already scheduled videos. {len(unscheduled_videos)} new videos available for '{channel_name}'.")
 
         # Sort the new, unscheduled videos
         if sort_order == 'oldest':
             unscheduled_videos.reverse() # Assumes fetch_videos returns newest first
+            print(f"[{datetime.datetime.now()}] Sorted new videos for '{channel_name}' by oldest.")
         elif sort_order == 'random':
             random.shuffle(unscheduled_videos)
+            print(f"[{datetime.datetime.now()}] Shuffled new videos for '{channel_name}' randomly.")
+        else:
+            print(f"[{datetime.datetime.now()}] Sorted new videos for '{channel_name}' by newest (default).")
 
         # Fetch publicity videos
         publicity_videos = []
         publicity_pool_name = channel_config.get('publicity_pool')
         if publicity_pool_name and publicity_pool_name in publicity_pools:
+            print(f"[{datetime.datetime.now()}] Fetching publicity videos for '{channel_name}' from pool '{publicity_pool_name}'...")
             publicity_pool_config = publicity_pools[publicity_pool_name]
             pub_min_duration = publicity_pool_config.get('min_duration')
             pub_max_duration = publicity_pool_config.get('max_duration')
             for yt_channel_url in publicity_pool_config.get('youtube_channels', []):
                 publicity_videos.extend(fetch_videos(yt_channel_url, 50, pub_min_duration, pub_max_duration, 'random'))
+            print(f"[{datetime.datetime.now()}] Fetched {len(publicity_videos)} publicity videos for '{channel_name}'.")
         
         # Create new playlist from unscheduled videos and generate programme elements
         new_playlist = interleave_playlist(unscheduled_videos, publicity_videos, channel_config.get('programs_per_publicity', 0))
+        print(f"[{datetime.datetime.now()}] Interleaved playlist created for '{channel_name}' with {len(new_playlist)} items.")
         generate_programme_elements(new_tv_element, channel_id, new_playlist, days_to_generate, last_program_end_time)
+        print(f"[{datetime.datetime.now()}] Generated new programme elements for '{channel_name}'.")
 
     # Write the new EPG file
     tree = ElementTree(new_tv_element)
