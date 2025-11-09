@@ -63,7 +63,11 @@ PseudoTV is a Python-based IPTV system designed to create and stream television-
 
 *   Channels can be organized into groups (e.g., "News", "Adults") within the M3U playlist using the `group-title` attribute, allowing for better organization in IPTV clients.
 
-### 4.9. Configuration
+### 4.9. Channel Icons
+
+*   Each channel can be assigned a custom icon via a URL, which will be displayed in the M3U playlist and EPG.
+
+### 4.10. Configuration
 
 *   All system and channel configuration will be managed through a single YAML file (e.g., `config.yaml`).
 *   The configuration will support defining multiple channels.

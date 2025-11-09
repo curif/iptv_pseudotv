@@ -20,6 +20,7 @@ channels:
   - id: "news-channel"
     name: "Global News"
     group_title: "News"
+    icon_url: "https://i.imgur.com/5zJ5z5Y.png"
     quality: "best[height<=360]"
     mixing_algorithm: "interleave"
     sort_order: "oldest"
@@ -40,6 +41,7 @@ channels:
   - id: "tech-channel"
     name: "Tech Insights"
     group_title: "Technology"
+    icon_url: "https://i.imgur.com/6gJ2z5Y.png"
     quality: "best[height<=1080]"
     mixing_algorithm: "concatenate"
     sort_order: "random"
@@ -60,6 +62,7 @@ channels:
   - id: "travel-channel"
     name: "World Explorer"
     group_title: "Travel"
+    icon_url: "https://i.imgur.com/7zJ5z5Y.png"
     quality: "best[height<=720]"
     programs_per_publicity: 4
     publicity_pool: "general_ads"
@@ -71,6 +74,7 @@ channels:
   - id: "music-channel"
     name: "Music Mix"
     group_title: "Music"
+    icon_url: "https://i.imgur.com/8zJ5z5Y.png"
     quality: "bestaudio"
     youtube_channels:
       - "https://www.youtube.com/@Vevo"

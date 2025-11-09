@@ -6,9 +6,13 @@ services:
     ports:
       - "5004:5004"
     volumes:
-      # Mount your local config.yaml file to a path inside the container
+      # Mount your local config.yaml file
       - ./config.yaml:/app/config.yaml
+      # Mount a local data directory to persist the EPG file
+      - ./data:/data
     environment:
       # Tell the application where to find the config file
       - PSEUDOTV_CONFIG_PATH=/app/config.yaml
+      # Tell the application where to store data files
+      - PSEUDOTV_DATA_PATH=/data
     restart: unless-stopped

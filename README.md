@@ -89,16 +89,24 @@ This is a list of your custom TV channels. Each item in the list represents one 
 
 ### Docker Installation (with docker-compose)
 
-This is the recommended method for running the server with Docker, as it makes managing the configuration easier.
+This is the recommended method for running the server with Docker, as it makes managing configuration and data persistence easier.
 
-1.  **Edit `config.yaml`:** Modify the `config.yaml` file on your host machine to your liking.
+1.  **Create a data directory:**
+    ```bash
+    mkdir data
+    ```
 
-2.  **Run with docker-compose:**
+2.  **Edit `config.yaml`:** Modify the `config.yaml` file on your host machine to your liking.
+
+3.  **Run with docker-compose:**
     ```bash
     docker-compose up -d
     ```
 
-    This will build the image if it doesn't exist and start the server in detached mode. The `docker-compose.yml` file is configured to mount your local `config.yaml` into the container and tell the application to use it.
+    The `docker-compose.yml` file is configured to:
+    -   Mount your local `config.yaml` into the container.
+    -   Mount the `./data` directory to persist the generated EPG file.
+    -   Set the `PSEUDOTV_DATA_PATH` environment variable so the application knows where to store the EPG.
 
 ### Docker Installation (manual)
 

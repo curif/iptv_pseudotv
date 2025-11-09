@@ -30,6 +30,7 @@ def load_config():
         sys.exit(1)
 
 CONFIG = load_config()
+DATA_PATH = os.environ.get('PSEUDOTV_DATA_PATH', '.')
 
 # --- EPG Generation Logic (to be run in background) ---
 def fetch_videos(channel_url, playlist_end, min_duration=None, max_duration=None, sort_order='newest'):
@@ -123,7 +124,8 @@ def create_epg(config):
     print(f"[{datetime.datetime.now()}] Starting EPG generation...")
     epg_config = config.get('epg', {})
     days_to_generate = epg_config.get('days', 2)
-    output_file = epg_config.get('output_file', 'epg.xml')
+    output_file_name = epg_config.get('output_file', 'epg.xml')
+    output_file = os.path.join(DATA_PATH, output_file_name)
     publicity_pools = config.get('publicity', {})
     all_channels = config.get('channels', [])
 
@@ -238,7 +240,8 @@ def background_epg_generator():
 # --- Flask Web Server ---
 @app.route('/epg.xml')
 def serve_epg():
-    epg_file = CONFIG.get('epg', {}).get('output_file', 'epg.xml')
+    epg_file_name = CONFIG.get('epg', {}).get('output_file', 'epg.xml')
+    epg_file = os.path.join(DATA_PATH, epg_file_name)
     try:
         with open(epg_file, 'r') as f:
             return Response(f.read(), mimetype='application/xml')
@@ -260,7 +263,8 @@ def serve_m3u():
 @app.route('/stream/<channel_id>')
 def stream_channel(channel_id):
     def generate_stream(channel_id):
-        epg_file = CONFIG.get('epg', {}).get('output_file', 'epg.xml')
+        epg_file_name = CONFIG.get('epg', {}).get('output_file', 'epg.xml')
+        epg_file = os.path.join(DATA_PATH, epg_file_name)
         try:
             tree = ET.parse(epg_file)
             root = tree.getroot()
@@ -353,7 +357,8 @@ def main():
         sys.exit(0)
 
     # Check for existing EPG file on startup
-    epg_file = CONFIG.get('epg', {}).get('output_file', 'epg.xml')
+    epg_file_name = CONFIG.get('epg', {}).get('output_file', 'epg.xml')
+    epg_file = os.path.join(DATA_PATH, epg_file_name)
     if not os.path.exists(epg_file):
         print("No existing EPG found. Performing initial EPG generation synchronously...")
         create_epg(CONFIG)
