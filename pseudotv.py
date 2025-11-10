@@ -1,4 +1,3 @@
-
 import argparse
 import yaml
 import sys
@@ -6,6 +5,7 @@ import random
 import datetime
 import time
 import threading
+import queue
 from xml.etree.ElementTree import Element, SubElement, ElementTree, indent
 import yt_dlp
 import subprocess
@@ -61,19 +61,10 @@ def fetch_videos(channel_url, playlist_end, min_duration=None, max_duration=None
                 entries = result['entries']
                 print(f"[{datetime.datetime.now()}] Fetched {len(entries)} raw videos from {processed_url}")
                 if min_duration is not None:
-                    original_count = len(entries)
                     entries = [e for e in entries if e.get('duration', 0) >= min_duration]
-                    print(f"[{datetime.datetime.now()}] Filtered by min_duration ({min_duration}s): {len(entries)} videos remaining.")
                 if max_duration is not None:
-                    original_count = len(entries)
                     entries = [e for e in entries if e.get('duration', 0) <= max_duration]
-                    print(f"[{datetime.datetime.now()}] Filtered by max_duration ({max_duration}s): {len(entries)} videos remaining.")
-                if sort_order == 'oldest':
-                    entries.reverse()
-                    print(f"[{datetime.datetime.now()}] Sorted by oldest.")
-                elif sort_order == 'random':
-                    random.shuffle(entries)
-                    print(f"[{datetime.datetime.now()}] Shuffled randomly.")
+                # We no longer sort here, sorting is handled in create_epg after filtering
                 return entries
     except Exception as e:
         print(f"[{datetime.datetime.now()}] Error fetching from {processed_url}: {e}", file=sys.stderr)
@@ -89,10 +80,6 @@ def fetch_videos(channel_url, playlist_end, min_duration=None, max_duration=None
                             entries = [e for e in entries if e.get('duration', 0) >= min_duration]
                         if max_duration is not None:
                             entries = [e for e in entries if e.get('duration', 0) <= max_duration]
-                        if sort_order == 'oldest':
-                            entries.reverse()
-                        elif sort_order == 'random':
-                            random.shuffle(entries)
                         return entries
             except Exception as e_fallback:
                 print(f"[{datetime.datetime.now()}] Error fetching from original URL {channel_url}: {e_fallback}", file=sys.stderr)
@@ -116,7 +103,6 @@ def generate_programme_elements(root_element, channel_id, playlist, days, start_
     total_duration_seconds = sum(item.get('duration', 0) for item in playlist)
     if total_duration_seconds == 0: return
 
-    # Calculate how many times the playlist needs to repeat to fill the EPG duration
     schedule_end_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=days)
     remaining_time_to_fill = (schedule_end_time - start_offset_time).total_seconds()
     if remaining_time_to_fill <= 0: return
@@ -150,10 +136,9 @@ def create_epg(config):
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     new_tv_element = Element('tv')
 
-    # Preserve future programs and channel definitions from existing EPG
     existing_programs = {}
     if os.path.exists(output_file):
-        print(f"[{datetime.datetime.now()}] Found existing EPG file: {output_file}. Attempting to parse...")
+        print(f"[{datetime.datetime.now()}] Found existing EPG file: {output_file}. Parsing for rolling schedule...")
         try:
             tree = ET.parse(output_file)
             root = tree.getroot()
@@ -165,26 +150,25 @@ def create_epg(config):
                     stop_time = datetime.datetime.strptime(program.get('stop'), '%Y%m%d%H%M%S %z')
                     if stop_time > now_utc:
                         existing_programs[channel_id].append(program)
-            print(f"[{datetime.datetime.now()}] Successfully parsed existing EPG. Preserved future programs for {len(existing_programs)} channels.")
+            print(f"[{datetime.datetime.now()}] Successfully parsed EPG. Preserved future programs for {len(existing_programs)} channels.")
         except ET.ParseError:
-            print(f"[{datetime.datetime.now()}] Could not parse existing EPG file: {output_file}. A new one will be created.", file=sys.stderr)
+            print(f"[{datetime.datetime.now()}] Could not parse existing EPG file. A new one will be created.", file=sys.stderr)
             existing_programs = {}
 
     for channel_config in all_channels:
         channel_id = channel_config['id']
         channel_name = channel_config['name']
 
-        # If channel is new, add it to the EPG
         if new_tv_element.find(f'.//channel[@id="{channel_id}"]') is None:
             channel_element = SubElement(new_tv_element, 'channel', id=channel_id)
             SubElement(channel_element, 'display-name').text = channel_name
+            if channel_config.get('icon_url'):
+                SubElement(channel_element, 'icon', src=channel_config.get('icon_url'))
             print(f"[{datetime.datetime.now()}] Added new channel definition for '{channel_name}'.")
 
-        # Add preserved future programs to the new EPG and find the last end time
         last_program_end_time = now_utc
         scheduled_video_ids = set()
         if channel_id in existing_programs:
-            print(f"[{datetime.datetime.now()}] Preserving future programs for channel '{channel_name}'...")
             for program in existing_programs[channel_id]:
                 new_tv_element.append(program)
                 video_src_element = program.find('video')
@@ -196,76 +180,62 @@ def create_epg(config):
                 stop_time = datetime.datetime.strptime(program.get('stop'), '%Y%m%d%H%M%S %z')
                 if stop_time > last_program_end_time:
                     last_program_end_time = stop_time
-            print(f"[{datetime.datetime.now()}] Preserved {len(existing_programs[channel_id])} programs for '{channel_name}'. Last program ends at {last_program_end_time}.")
-
-        print(f"[{datetime.datetime.now()}] Processing channel: {channel_name}. Generating new programs starting from {last_program_end_time}")
         
-        # Fetch all available videos
+        print(f"[{datetime.datetime.now()}] Processing '{channel_name}'. Preserved {len(scheduled_video_ids)} future programs. New programs will start from {last_program_end_time}.")
+        
         all_available_videos = []
         min_duration = channel_config.get('min_duration')
         max_duration = channel_config.get('max_duration')
-        # Always fetch newest first to have a consistent base for sorting
         sort_order = channel_config.get('sort_order', 'newest')
         mixing_algorithm = channel_config.get('mixing_algorithm', 'concatenate')
-        source_channels_videos = []
-        print(f"[{datetime.datetime.now()}] Fetching videos for '{channel_name}' from YouTube sources...")
-        for yt_channel_url in channel_config.get('youtube_channels', []):
-            source_channels_videos.append(fetch_videos(yt_channel_url, 50, min_duration, max_duration, 'newest'))
+        global_max_videos_per_source = epg_config.get('max_videos_per_source', 50)
+        channel_max_videos = channel_config.get('max_videos_per_source', global_max_videos_per_source)
         
-        # Mix available videos before filtering
+        source_channels_videos = []
+        for yt_channel_url in channel_config.get('youtube_channels', []):
+            source_channels_videos.append(fetch_videos(yt_channel_url, channel_max_videos, min_duration, max_duration))
+        
         if mixing_algorithm == 'interleave':
-            print(f"[{datetime.datetime.now()}] Mixing videos for '{channel_name}' using 'interleave' algorithm.")
             max_len = max(len(v) for v in source_channels_videos) if source_channels_videos else 0
             for i in range(max_len):
                 for videos in source_channels_videos:
                     if i < len(videos):
                         all_available_videos.append(videos[i])
-        else: # Default to 'concatenate'
-            print(f"[{datetime.datetime.now()}] Mixing videos for '{channel_name}' using 'concatenate' algorithm.")
+        else:
             for videos in source_channels_videos:
                 all_available_videos.extend(videos)
 
-        # Filter out already scheduled videos
-        original_count = len(all_available_videos)
         unscheduled_videos = [v for v in all_available_videos if v.get('id') not in scheduled_video_ids]
-        print(f"[{datetime.datetime.now()}] Filtered {original_count - len(unscheduled_videos)} already scheduled videos. {len(unscheduled_videos)} new videos available for '{channel_name}'.")
+        print(f"[{datetime.datetime.now()}] Fetched {len(all_available_videos)} total videos, {len(unscheduled_videos)} are new.")
 
-        # Sort the new, unscheduled videos
         if sort_order == 'oldest':
-            unscheduled_videos.reverse() # Assumes fetch_videos returns newest first
-            print(f"[{datetime.datetime.now()}] Sorted new videos for '{channel_name}' by oldest.")
+            unscheduled_videos.sort(key=lambda x: x.get('upload_date', ''))
         elif sort_order == 'random':
             random.shuffle(unscheduled_videos)
-            print(f"[{datetime.datetime.now()}] Shuffled new videos for '{channel_name}' randomly.")
-        else:
-            print(f"[{datetime.datetime.now()}] Sorted new videos for '{channel_name}' by newest (default).")
+        else: # newest
+            unscheduled_videos.sort(key=lambda x: x.get('upload_date', ''), reverse=True)
 
-        # Fetch publicity videos
         publicity_videos = []
         publicity_pool_name = channel_config.get('publicity_pool')
         if publicity_pool_name and publicity_pool_name in publicity_pools:
-            print(f"[{datetime.datetime.now()}] Fetching publicity videos for '{channel_name}' from pool '{publicity_pool_name}'...")
             publicity_pool_config = publicity_pools[publicity_pool_name]
             pub_min_duration = publicity_pool_config.get('min_duration')
             pub_max_duration = publicity_pool_config.get('max_duration')
+            pub_max_videos = publicity_pool_config.get('max_videos_per_source', global_max_videos_per_source)
             for yt_channel_url in publicity_pool_config.get('youtube_channels', []):
-                publicity_videos.extend(fetch_videos(yt_channel_url, 50, pub_min_duration, pub_max_duration, 'random'))
-            print(f"[{datetime.datetime.now()}] Fetched {len(publicity_videos)} publicity videos for '{channel_name}'.")
+                publicity_videos.extend(fetch_videos(yt_channel_url, pub_max_videos, pub_min_duration, pub_max_duration, 'random'))
         
-        # Create new playlist from unscheduled videos and generate programme elements
         new_playlist = interleave_playlist(unscheduled_videos, publicity_videos, channel_config.get('programs_per_publicity', 0))
-        print(f"[{datetime.datetime.now()}] Interleaved playlist created for '{channel_name}' with {len(new_playlist)} items.")
         generate_programme_elements(new_tv_element, channel_id, new_playlist, days_to_generate, last_program_end_time)
-        print(f"[{datetime.datetime.now()}] Generated new programme elements for '{channel_name}'.")
 
-    # Write the new EPG file
     tree = ElementTree(new_tv_element)
     indent(tree, space="  ", level=0)
     tree.write(output_file, encoding='UTF-8', xml_declaration=True)
     print(f"[{datetime.datetime.now()}] EPG generation complete.")
 
 def background_epg_generator():
-    """A background thread function to periodically generate the EPG."""
+    # Initial delay to allow the server to start up before the first EPG generation
+    time.sleep(10)
     interval_hours = CONFIG.get('epg', {}).get('refresh_interval_hours', 12)
     interval_seconds = interval_hours * 3600
     while True:
@@ -290,51 +260,47 @@ def serve_m3u():
     for channel in CONFIG.get('channels', []):
         channel_id = channel['id']
         channel_name = channel['name']
-        group_title = channel.get('group_title', 'Other') # Default to 'Other' if not specified
+        group_title = channel.get('group_title', 'Other')
+        icon_url = channel.get('icon_url', '')
         stream_url = url_for('stream_channel', channel_id=channel_id, _external=True)
-        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-name="{channel_name}" group-title="{group_title}",{channel_name}\n'
+        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{icon_url}" tvg-name="{channel_name}" group-title="{group_title}",{channel_name}\n'
         m3u_content += f'{stream_url}\n'
     return Response(m3u_content, mimetype='application/vnd.apple.mpegurl')
 
 @app.route('/stream/<channel_id>')
 def stream_channel(channel_id):
+
     def generate_stream(channel_id):
-        epg_file_name = CONFIG.get('epg', {}).get('output_file', 'epg.xml')
-        epg_file = os.path.join(DATA_PATH, epg_file_name)
+        # This generator is responsible for yielding a continuous stream of video data.
+        
+        # --- EPG Parsing and Schedule Setup ---
         try:
+            epg_file_name = CONFIG.get('epg', {}).get('output_file', 'epg.xml')
+            epg_file = os.path.join(DATA_PATH, epg_file_name)
             tree = ET.parse(epg_file)
             root = tree.getroot()
         except (FileNotFoundError, ET.ParseError):
-            # EPG should be available due to initial generation, but handle error gracefully
             print(f"Could not find or parse EPG file {epg_file}. Aborting stream.", file=sys.stderr)
             return
 
-        channel_programs = []
-        for program_element in root.findall('programme'):
-            if program_element.get('channel') == channel_id:
-                video_element = program_element.find('video')
-                if video_element is not None:
-                    channel_programs.append({
-                        'start': program_element.get('start'),
-                        'stop': program_element.get('stop'),
-                        'title': program_element.find('title').text if program_element.find('title') is not None else 'Untitled',
-                        'url': video_element.get('src')
-                    })
-        channel_programs.sort(key=lambda x: x['start'])
+        channel_programs = sorted([
+            {
+                'start': p.get('start'),
+                'stop': p.get('stop'),
+                'title': p.find('title').text if p.find('title') is not None else 'Untitled',
+                'url': p.find('video').get('src')
+            }
+            for p in root.findall('programme') if p.get('channel') == channel_id and p.find('video') is not None
+        ], key=lambda x: x['start'])
+
         channel_config = next((c for c in CONFIG['channels'] if c['id'] == channel_id), None)
-        if not channel_config:
-            print(f"Channel ID '{channel_id}' not found in configuration.", file=sys.stderr)
+        if not channel_config or not channel_programs:
+            print(f"Channel '{channel_id}' not found or has no programs.", file=sys.stderr)
             return
 
-        quality_setting = channel_config.get('quality', 'best')
-        output_config = channel_config.get('output', {})
-        resolution = output_config.get('resolution', '1280x720')
-        framerate = output_config.get('framerate', 30)
-        video_bitrate = output_config.get('video_bitrate', '4M')
-        audio_bitrate = output_config.get('audio_bitrate', '192k')
-
+        # --- Find Starting Program ---
         now_utc = datetime.datetime.now(datetime.timezone.utc)
-        start_index = 0
+        start_index = -1
         seek_time = 0
         for i, program in enumerate(channel_programs):
             start_time = datetime.datetime.strptime(program['start'], '%Y%m%d%H%M%S %z')
@@ -343,41 +309,96 @@ def stream_channel(channel_id):
                 start_index = i
                 seek_time = (now_utc - start_time).total_seconds()
                 break
+        
+        if start_index == -1:
+            # If no program is currently running, try to find the next scheduled program to start from its beginning.
+            for i, program in enumerate(channel_programs):
+                start_time = datetime.datetime.strptime(program['start'], '%Y%m%d%H%M%S %z')
+                if start_time > now_utc:
+                    print(f"No currently running program. Starting with next scheduled program: '{program['title']}'")
+                    start_index = i
+                    seek_time = 0
+                    break
+
+        if start_index == -1:
+            print(f"No currently or future scheduled program found for channel '{channel_id}'.", file=sys.stderr)
+            return
+
+        # --- Main Streaming Loop ---
+        quality_setting = channel_config.get('quality', 'best')
+        output_config = channel_config.get('output', {})
 
         for i in range(start_index, len(channel_programs)):
             program = channel_programs[i]
-            video_url = program['url']
+            yt_dlp_process = None
+            ffmpeg_process = None
+
             try:
-                ydl_opts = {'format': quality_setting, 'quiet': True}
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(video_url, download=False)
-                    stream_url = info['url']
+                print(f"[{datetime.datetime.now()}] Starting stream for program: '{program['title']}'")
+
+                yt_dlp_cmd = [
+                    'yt-dlp',
+                    program['url'],
+                    '-f', quality_setting,
+                    '-o', '-' # Pipe to stdout
+                ]
 
                 ffmpeg_cmd = [
                     'ffmpeg',
-                    '-i', stream_url,
-                    '-c:v', 'libx264',
-                    '-s', resolution,
-                    '-r', str(framerate),
-                    '-b:v', video_bitrate,
+                    '-i', '-', # Read from stdin
+                    '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency',
+                    '-s', output_config.get('resolution', '1280x720'),
+                    '-r', str(output_config.get('framerate', 30)),
+                    '-b:v', output_config.get('video_bitrate', '4M'),
                     '-c:a', 'aac',
-                    '-b:a', audio_bitrate,
+                    '-b:a', output_config.get('audio_bitrate', '192k'),
                     '-f', 'mpegts',
-                    'pipe:1'
+                    'pipe:1' # Pipe to stdout
                 ]
-                if i == start_index and seek_time > 0:
+
+                # Apply seek time only for the very first video of the stream
+                current_seek_time = seek_time if i == start_index else 0
+                if current_seek_time > 0:
+                    # Insert -ss before -i for fast seeking
                     ffmpeg_cmd.insert(1, '-ss')
-                    ffmpeg_cmd.insert(2, str(seek_time))
-                process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                    ffmpeg_cmd.insert(2, str(current_seek_time))
+
+                # Start yt-dlp process
+                yt_dlp_process = subprocess.Popen(yt_dlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+                # Start ffmpeg process, piping yt-dlp's output to its input
+                ffmpeg_process = subprocess.Popen(ffmpeg_cmd, stdin=yt_dlp_process.stdout, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                
+                # This allows yt-dlp to receive a SIGPIPE if ffmpeg exits.
+                if yt_dlp_process.stdout:
+                    yt_dlp_process.stdout.close()
+
+                # Yield chunks from ffmpeg's output
                 while True:
-                    chunk = process.stdout.read(1024)
+                    chunk = ffmpeg_process.stdout.read(4096)
                     if not chunk:
                         break
                     yield chunk
-                process.wait()
+                
+                print(f"[{datetime.datetime.now()}] Finished program: '{program['title']}'")
+
+            except (GeneratorExit, BrokenPipeError):
+                print(f"[{datetime.datetime.now()}] Client disconnected. Stopping stream for '{program['title']}'.", file=sys.stderr)
+                break # Exit the loop
             except Exception as e:
-                print(f"Error streaming '{program['title']}': {e}", file=sys.stderr)
-                continue
+                print(f"[{datetime.datetime.now()}] Error during stream for '{program['title']}': {e}. Skipping to next program.", file=sys.stderr)
+                continue # Skip to the next video
+            finally:
+                # Clean up processes for the current video
+                for p, name in [(yt_dlp_process, 'yt-dlp'), (ffmpeg_process, 'ffmpeg')]:
+                    if p and p.poll() is None:
+                        print(f"[{datetime.datetime.now()}] Terminating leftover {name} process (PID: {p.pid}).", file=sys.stderr)
+                        p.terminate()
+                        try:
+                            p.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            p.kill()
+                            p.wait()
 
     return Response(generate_stream(channel_id), mimetype='video/MP2T')
 
@@ -392,21 +413,16 @@ def main():
         create_epg(CONFIG)
         sys.exit(0)
 
-    # Check for existing EPG file on startup
     epg_file_name = CONFIG.get('epg', {}).get('output_file', 'epg.xml')
     epg_file = os.path.join(DATA_PATH, epg_file_name)
     if not os.path.exists(epg_file):
         print("No existing EPG found. Performing initial EPG generation synchronously...")
         create_epg(CONFIG)
-    else:
-        print(f"Using existing EPG file: {epg_file}. Background refresh will update it.")
 
-    # Start the background thread for periodic EPG refreshes
     epg_thread = threading.Thread(target=background_epg_generator, daemon=True)
     epg_thread.start()
     print("Background EPG refresh thread started.")
 
-    # Start the Flask server
     app.run(host=args.host, port=args.port)
 
 if __name__ == '__main__':

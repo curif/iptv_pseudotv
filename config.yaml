@@ -3,6 +3,8 @@ epg:
   output_file: "epg.xml"
   # How often to refresh the EPG in the background, in hours.
   refresh_interval_hours: 12
+  # Max videos to fetch per YouTube source. Lower for faster EPG generation.
+  max_videos_per_source: 20
 
 publicity:
   general_ads:
@@ -78,3 +80,22 @@ channels:
     quality: "bestaudio"
     youtube_channels:
       - "https://www.youtube.com/@Vevo"
+
+  - id: "shorts-channel"
+    name: "Shorts"
+    group_title: "Entertainment"
+    icon_url: "https://i.imgur.com/9zJ5z5Y.png"
+    quality: "best[height<=1080]"
+    mixing_algorithm: "interleave"
+    sort_order: "random"
+    programs_per_publicity: 10
+    publicity_pool: "general_ads"
+    min_duration: 0
+    max_duration: 180
+    output:
+      resolution: "1080x1920"
+      framerate: 30
+      video_bitrate: "4M"
+      audio_bitrate: "128k"
+    youtube_channels:
+      - "https://www.youtube.com/@shootimpro"

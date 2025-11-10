@@ -27,6 +27,7 @@ This section controls the Electronic Program Guide generation.
 -   `days` (integer, default: `2`): The number of days for which the EPG schedule will be generated.
 -   `output_file` (string, default: `"epg.xml"`): The name of the XMLTV file where the EPG data will be saved.
 -   `refresh_interval_hours` (integer, default: `12`): How often (in hours) the EPG will be regenerated in the background.
+-   `max_videos_per_source` (integer, optional, default: `50`): The maximum number of videos to fetch from each YouTube channel source during EPG generation. Lowering this value can significantly speed up EPG generation.
 
 ### `publicity` Section
 
@@ -36,6 +37,7 @@ This section defines pools of YouTube channels that will be used for publicity/a
     -   `min_duration` (integer, optional): Minimum duration (in seconds) for publicity videos to be considered.
     -   `max_duration` (integer, optional): Maximum duration (in seconds) for publicity videos to be considered.
     -   `youtube_channels` (list of strings): A list of YouTube channel URLs or handles (e.g., `https://www.youtube.com/@YourAdChannel`) from which to fetch publicity videos.
+    -   `max_videos_per_source` (integer, optional): Overrides the global `epg.max_videos_per_source` for this specific publicity pool.
 
 ### `channels` Section
 
@@ -56,6 +58,7 @@ This is a list of your custom TV channels. Each item in the list represents one 
 -   `publicity_pool` (string, optional): The name of the publicity pool (defined in the `publicity` section) to use for this channel.
 -   `min_duration` (integer, optional): Minimum duration (in seconds) for program videos to be considered.
 -   `max_duration` (integer, optional): Maximum duration (in seconds) for program videos to be considered.
+-   `max_videos_per_source` (integer, optional): Overrides the global `epg.max_videos_per_source` for this specific channel.
 -   `output` (object, **required**): Defines the stable output format for this channel's stream. All videos will be re-encoded to these specifications for consistent playback across IPTV clients.
     -   `resolution` (string, default: `"1280x720"`): The output video resolution (e.g., `"1920x1080"`, `"640x360"`).
     -   `framerate` (integer, default: `30`): The output video frame rate (e.g., `25`, `30`).
