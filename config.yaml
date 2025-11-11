@@ -113,20 +113,25 @@ channels:
     group_title: "Entertainment"
     icon_url: "https://i.imgur.com/9zJ5z5Y.png"
     quality: "best[height<=1080]"
-    mixing_algorithm: "interleave"
-    sort_order: "random"
-    programs_per_publicity: 10
-    publicity_pool: "general_ads"
-    min_duration: 0
-    max_duration: 180
     output:
       resolution: "1080x1920"
       framerate: 30
       video_bitrate: "4M"
       audio_bitrate: "128k"
     youtube_channels:
-      - "https://www.youtube.com/@shootimpro"
+      - url: "https://www.youtube.com/@shootimpro"
+        type: "shorts"
     match_title: "impro"
     date_after: "now-1y"
     cache: true # Enable caching for this channel
     cache_ttl_hours: 12 # Override global TTL for this channel
+
+  - id: "mixed-media-channel"
+    name: "Mixed Media"
+    group_title: "Variety"
+    youtube_channels:
+      - "https://www.youtube.com/@mkbhd" # Defaults to type: videos
+      - url: "https://www.youtube.com/@MrBeast"
+        type: "shorts"
+      - url: "https://www.youtube.com/playlist?list=PLrEnWoR732-BHrPp_P8G_geS_jK2vWd5u"
+        type: "podcasts"

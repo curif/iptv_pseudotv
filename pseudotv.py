@@ -35,7 +35,7 @@ CONFIG = load_config()
 DATA_PATH = os.environ.get('PSEUDOTV_DATA_PATH', '.')
 
 # --- EPG Generation Logic (to be run in background) ---
-def fetch_videos(channel_url, playlist_end, min_duration=None, max_duration=None, sort_order='newest', match_title=None, date_after=None, date_before=None, cache_enabled=False, cache_ttl_hours=0):
+def fetch_videos(channel_url, playlist_end, min_duration=None, max_duration=None, sort_order='newest', match_title=None, date_after=None, date_before=None, cache_enabled=False, cache_ttl_hours=0, source_type='videos'):
     """Fetches, filters, and sorts video information from a YouTube channel URL, with optional caching."""
 
     def _match_filter(info_dict):
@@ -44,6 +44,17 @@ def fetch_videos(channel_url, playlist_end, min_duration=None, max_duration=None
             return False
         
         duration = info_dict.get('duration')
+
+        if source_type == 'shorts':
+            width = info_dict.get('width')
+            height = info_dict.get('height')
+            if not (duration and duration <= 61 and width and height and width < height):
+                return False
+        elif source_type == 'podcasts':
+            categories = info_dict.get('categories', [])
+            if 'Podcasts' not in categories:
+                return False
+
         if duration:
             if min_duration is not None and duration < min_duration:
                 return False
@@ -305,8 +316,18 @@ def create_epg(config, target_channel_id=None):
             cache_ttl_hours = channel_config.get('cache_ttl_hours', global_cache_ttl_hours)
     
             source_channels_videos = []
-            for yt_channel_url in channel_config.get('youtube_channels', []):
-                source_channels_videos.append(fetch_videos(yt_channel_url, channel_max_videos, min_duration, max_duration, sort_order, match_title, date_after, date_before, cache_enabled, cache_ttl_hours))
+            for source in channel_config.get('youtube_channels', []):
+                yt_channel_url = None
+                source_type = 'videos' # Default to videos
+
+                if isinstance(source, str):
+                    yt_channel_url = source
+                elif isinstance(source, dict):
+                    yt_channel_url = source.get('url')
+                    source_type = source.get('type', 'videos')
+                
+                if yt_channel_url:
+                    source_channels_videos.append(fetch_videos(yt_channel_url, channel_max_videos, min_duration, max_duration, sort_order, match_title, date_after, date_before, cache_enabled, cache_ttl_hours, source_type))
     
             if mixing_algorithm == 'interleave':
                 max_len = max(len(v) for v in source_channels_videos) if source_channels_videos else 0
@@ -340,11 +361,21 @@ def create_epg(config, target_channel_id=None):
                 pub_cache_enabled = publicity_pool_config.get('cache', False)
                 pub_cache_ttl_hours = publicity_pool_config.get('cache_ttl_hours', global_cache_ttl_hours)
     
-                for yt_channel_url in publicity_pool_config.get('youtube_channels', []):
-                    fetched_ads = fetch_videos(yt_channel_url, pub_max_videos, pub_min_duration, pub_max_duration, 'random', None, None, None, pub_cache_enabled, pub_cache_ttl_hours)
-                    for ad in fetched_ads:
-                        ad['is_ad'] = True # Add the flag here
-                    publicity_videos.extend(fetched_ads)
+                for source in publicity_pool_config.get('youtube_channels', []):
+                    yt_channel_url = None
+                    source_type = 'videos' # Default to videos
+
+                    if isinstance(source, str):
+                        yt_channel_url = source
+                    elif isinstance(source, dict):
+                        yt_channel_url = source.get('url')
+                        source_type = source.get('type', 'videos')
+
+                    if yt_channel_url:
+                        fetched_ads = fetch_videos(yt_channel_url, pub_max_videos, pub_min_duration, pub_max_duration, 'random', None, None, None, pub_cache_enabled, pub_cache_ttl_hours, source_type)
+                        for ad in fetched_ads:
+                            ad['is_ad'] = True # Add the flag here
+                        publicity_videos.extend(fetched_ads)
     
             new_playlist = interleave_playlist(unscheduled_videos, publicity_videos, channel_config.get('programs_per_publicity', 0))
             generate_programme_elements(new_tv_element, channel_id, new_playlist, days_to_generate, last_program_end_time)
@@ -448,11 +479,16 @@ def stream_channel(channel_id):
         # --- Main Streaming Loop ---
         quality_setting = channel_config.get('quality', 'best')
         output_config = channel_config.get('output', {})
+        pts_offset = 0
 
         for i in range(start_index, len(channel_programs)):
             program = channel_programs[i]
             yt_dlp_process = None
             ffmpeg_process = None
+
+            start_time = datetime.datetime.strptime(program['start'], '%Y%m%d%H%M%S %z')
+            stop_time = datetime.datetime.strptime(program['stop'], '%Y%m%d%H%M%S %z')
+            duration = (stop_time - start_time).total_seconds()
 
             try:
                 print(f"[{datetime.datetime.now()}] Starting stream for program: '{program['title']}'")
@@ -467,6 +503,8 @@ def stream_channel(channel_id):
                 ffmpeg_cmd = [
                     'ffmpeg',
                     '-i', '-', # Read from stdin
+                    '-vf', f'setpts=PTS-STARTPTS+{pts_offset}/TB',
+                    '-af', f'asetpts=PTS-STARTPTS+{pts_offset}/TB',
                     '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency',
                     '-s', output_config.get('resolution', '1280x720'),
                     '-r', str(output_config.get('framerate', 30)),
@@ -483,6 +521,7 @@ def stream_channel(channel_id):
                     # Insert -ss before -i for fast seeking
                     ffmpeg_cmd.insert(1, '-ss')
                     ffmpeg_cmd.insert(2, str(current_seek_time))
+                    seek_time = 0 # Consume seek_time so it's not used again
 
                 # Start yt-dlp process
                 yt_dlp_process = subprocess.Popen(yt_dlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -502,6 +541,8 @@ def stream_channel(channel_id):
                     yield chunk
                 
                 print(f"[{datetime.datetime.now()}] Finished program: '{program['title']}'")
+                streamed_duration = duration - current_seek_time
+                pts_offset += streamed_duration
 
             except (GeneratorExit, BrokenPipeError):
                 print(f"[{datetime.datetime.now()}] Client disconnected. Stopping stream for '{program['title']}'.", file=sys.stderr)
@@ -549,7 +590,7 @@ def main():
     epg_thread.start()
     print("Background EPG refresh thread started.")
 
-    app.run(host=args.host, port=args.port)
+    app.run(host=args.host, port=args.port, threaded=True)
 
 if __name__ == '__main__':
     main()
