@@ -20,4 +20,4 @@ COPY . .
 EXPOSE 5004
 
 # Define the command to run the application
-CMD ["python", "pseudotv.py"]
+CMD ["python", "-u", "pseudotv.py"]
