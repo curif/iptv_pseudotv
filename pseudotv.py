@@ -6,6 +6,8 @@ import datetime
 import time
 import threading
 import queue
+import json
+import hashlib
 from xml.etree.ElementTree import Element, SubElement, ElementTree, indent
 import yt_dlp
 import subprocess
@@ -33,8 +35,23 @@ CONFIG = load_config()
 DATA_PATH = os.environ.get('PSEUDOTV_DATA_PATH', '.')
 
 # --- EPG Generation Logic (to be run in background) ---
-def fetch_videos(channel_url, playlist_end, min_duration=None, max_duration=None, sort_order='newest'):
-    """Fetches, filters, and sorts video information from a YouTube channel URL."""
+def fetch_videos(channel_url, playlist_end, min_duration=None, max_duration=None, sort_order='newest', match_title=None, date_after=None, date_before=None, cache_enabled=False, cache_ttl_hours=0):
+    """Fetches, filters, and sorts video information from a YouTube channel URL, with optional caching."""
+
+    def _match_filter(info_dict):
+        """yt-dlp filter function to exclude videos based on various criteria."""
+        if info_dict.get('live_status') == 'is_upcoming':
+            return False
+        
+        duration = info_dict.get('duration')
+        if duration:
+            if min_duration is not None and duration < min_duration:
+                return False
+            if max_duration is not None and duration > max_duration:
+                return False
+        
+        return True
+
     processed_url = channel_url
     if "youtube.com/c/" in channel_url or "youtube.com/user/" in channel_url or "youtube.com/@" in channel_url:
         if "youtube.com/@" in channel_url:
@@ -47,11 +64,38 @@ def fetch_videos(channel_url, playlist_end, min_duration=None, max_duration=None
             channel_handle = channel_url.split('/user/')[-1].split('/')[0]
             processed_url = f"https://www.youtube.com/user/{channel_handle}/videos"
 
+    cache_file_path = None
+    if cache_enabled and cache_ttl_hours > 0:
+        # Create a unique cache file name based on the URL and filters
+        cache_key = f"{processed_url}-{playlist_end}-{min_duration}-{max_duration}-{sort_order}-{match_title}-{date_after}-{date_before}"
+        cache_hash = hashlib.sha256(cache_key.encode()).hexdigest()
+        cache_file_path = os.path.join(DATA_PATH, f"cache_{cache_hash}.json")
+
+        if os.path.exists(cache_file_path):
+            try:
+                with open(cache_file_path, 'r') as f:
+                    cache_data = json.load(f)
+                cache_timestamp = datetime.datetime.fromisoformat(cache_data['timestamp'])
+                if (datetime.datetime.now() - cache_timestamp).total_seconds() < cache_ttl_hours * 3600:
+                    print(f"[{datetime.datetime.now()}] Using cached data for {processed_url}")
+                    return cache_data['videos']
+                else:
+                    print(f"[{datetime.datetime.now()}] Cache expired for {processed_url}")
+            except (json.JSONDecodeError, KeyError, FileNotFoundError) as e:
+                print(f"[{datetime.datetime.now()}] Error reading cache file {cache_file_path}: {e}. Re-fetching.", file=sys.stderr)
+
     ydl_opts = {
         'playlistend': playlist_end,
         'quiet': True,
         'no_warnings': True,
+        'match_filter': _match_filter,
     }
+    if match_title:
+        ydl_opts['matchtitle'] = match_title
+    if date_after:
+        ydl_opts['dateafter'] = date_after
+    if date_before:
+        ydl_opts['datebefore'] = date_before
 
     try:
         print(f"[{datetime.datetime.now()}] Fetching from: {processed_url} (sort_order: {sort_order})")
@@ -60,11 +104,20 @@ def fetch_videos(channel_url, playlist_end, min_duration=None, max_duration=None
             if 'entries' in result:
                 entries = result['entries']
                 print(f"[{datetime.datetime.now()}] Fetched {len(entries)} raw videos from {processed_url}")
-                if min_duration is not None:
-                    entries = [e for e in entries if e.get('duration', 0) >= min_duration]
-                if max_duration is not None:
-                    entries = [e for e in entries if e.get('duration', 0) <= max_duration]
-                # We no longer sort here, sorting is handled in create_epg after filtering
+
+                # Save to cache if enabled
+                if cache_enabled and cache_file_path:
+                    cache_data = {
+                        'timestamp': datetime.datetime.now().isoformat(),
+                        'videos': entries
+                    }
+                    try:
+                        with open(cache_file_path, 'w') as f:
+                            json.dump(cache_data, f)
+                        print(f"[{datetime.datetime.now()}] Saved data to cache: {cache_file_path}")
+                    except IOError as e:
+                        print(f"[{datetime.datetime.now()}] Error writing cache file {cache_file_path}: {e}", file=sys.stderr)
+
                 return entries
     except Exception as e:
         print(f"[{datetime.datetime.now()}] Error fetching from {processed_url}: {e}", file=sys.stderr)
@@ -76,10 +129,19 @@ def fetch_videos(channel_url, playlist_end, min_duration=None, max_duration=None
                     if 'entries' in result:
                         entries = result['entries']
                         print(f"[{datetime.datetime.now()}] Fetched {len(entries)} raw videos from fallback {channel_url}")
-                        if min_duration is not None:
-                            entries = [e for e in entries if e.get('duration', 0) >= min_duration]
-                        if max_duration is not None:
-                            entries = [e for e in entries if e.get('duration', 0) <= max_duration]
+
+                        # Save to cache if enabled (for fallback URL too)
+                        if cache_enabled and cache_file_path:
+                            cache_data = {
+                                'timestamp': datetime.datetime.now().isoformat(),
+                                'videos': entries
+                            }
+                            try:
+                                with open(cache_file_path, 'w') as f:
+                                    json.dump(cache_data, f)
+                                print(f"[{datetime.datetime.now()}] Saved data to cache (fallback): {cache_file_path}")
+                            except IOError as e:
+                                print(f"[{datetime.datetime.now()}] Error writing cache file {cache_file_path}: {e}", file=sys.stderr)
                         return entries
             except Exception as e_fallback:
                 print(f"[{datetime.datetime.now()}] Error fetching from original URL {channel_url}: {e_fallback}", file=sys.stderr)
@@ -119,120 +181,179 @@ def generate_programme_elements(root_element, channel_id, playlist, days, start_
                                            start=current_time.strftime('%Y%m%d%H%M%S %z'),
                                            stop=end_time.strftime('%Y%m%d%H%M%S %z'),
                                            channel=channel_id)
-            SubElement(programme_element, 'title').text = item.get('title', 'Untitled')
-            SubElement(programme_element, 'desc').text = item.get('description', 'No description available.')
+            
+            if item.get('is_ad'):
+                SubElement(programme_element, 'title').text = 'Commercial Break'
+                SubElement(programme_element, 'desc').text = 'Commercials'
+            else:
+                SubElement(programme_element, 'title').text = item.get('title', 'Untitled')
+                SubElement(programme_element, 'desc').text = item.get('description', 'No description available.')
+            
             SubElement(programme_element, 'video').set('src', f"https://www.youtube.com/watch?v={item.get('id')}")
             current_time = end_time
 
-def create_epg(config):
-    print(f"[{datetime.datetime.now()}] Starting EPG generation...")
-    epg_config = config.get('epg', {})
-    days_to_generate = epg_config.get('days', 2)
-    output_file_name = epg_config.get('output_file', 'epg.xml')
-    output_file = os.path.join(DATA_PATH, output_file_name)
-    publicity_pools = config.get('publicity', {})
-    all_channels = config.get('channels', [])
+def create_epg(config, target_channel_id=None):
+    if target_channel_id:
+        print(f"[{datetime.datetime.now()}] Starting EPG update for channel: {target_channel_id}...")
+    else:
+        print(f"[{datetime.datetime.now()}] Starting full EPG generation...")
 
-    now_utc = datetime.datetime.now(datetime.timezone.utc)
-    new_tv_element = Element('tv')
+        epg_config = config.get('epg', {})
+        days_to_generate = epg_config.get('days', 2)
+        output_file_name = epg_config.get('output_file', 'epg.xml')
+        output_file = os.path.join(DATA_PATH, output_file_name)
+        publicity_pools = config.get('publicity', {})
+        all_channels = config.get('channels', [])
+    
+        # Get global cache settings
+        global_cache_config = config.get('cache', {})
+        global_cache_ttl_hours = global_cache_config.get('ttl_hours', 0) # Default to 0 (no caching)
+    
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        new_tv_element = Element('tv')
+    
+        # --- Step 1: Parse existing EPG and preserve what's needed ---
+        if os.path.exists(output_file):
+            print(f"[{datetime.datetime.now()}] Found existing EPG file: {output_file}. Parsing...")
+            try:
+                tree = ET.parse(output_file)
+                root = tree.getroot()
+                # Always preserve all channel definitions
+                for channel in root.findall('channel'):
+                    new_tv_element.append(channel)
+    
+                # Preserve programs based on the operation mode
+                for program in root.findall('programme'):
+                    # If updating a single channel, keep all programs from OTHER channels
+                    if target_channel_id and program.get('channel') != target_channel_id:
+                        new_tv_element.append(program)
+                    # If doing a full refresh, check the channel's refresh strategy
+                    elif not target_channel_id:
+                        channel_id_of_program = program.get('channel')
+                        channel_config_of_program = next((c for c in all_channels if c.get('id') == channel_id_of_program), None)
+                        
+                        refresh_strategy = 'roll' # Default strategy
+                        if channel_config_of_program:
+                            refresh_strategy = channel_config_of_program.get('epg_refresh_strategy', 'roll')
 
-    existing_programs = {}
-    if os.path.exists(output_file):
-        print(f"[{datetime.datetime.now()}] Found existing EPG file: {output_file}. Parsing for rolling schedule...")
-        try:
-            tree = ET.parse(output_file)
-            root = tree.getroot()
-            for channel in root.findall('channel'):
-                new_tv_element.append(channel)
-                channel_id = channel.get('id')
-                existing_programs[channel_id] = []
-                for program in root.findall(f'.//programme[@channel="{channel_id}"]'):
-                    stop_time = datetime.datetime.strptime(program.get('stop'), '%Y%m%d%H%M%S %z')
-                    if stop_time > now_utc:
-                        existing_programs[channel_id].append(program)
-            print(f"[{datetime.datetime.now()}] Successfully parsed EPG. Preserved future programs for {len(existing_programs)} channels.")
-        except ET.ParseError:
-            print(f"[{datetime.datetime.now()}] Could not parse existing EPG file. A new one will be created.", file=sys.stderr)
-            existing_programs = {}
-
-    for channel_config in all_channels:
-        channel_id = channel_config['id']
-        channel_name = channel_config['name']
-
-        if new_tv_element.find(f'.//channel[@id="{channel_id}"]') is None:
-            channel_element = SubElement(new_tv_element, 'channel', id=channel_id)
-            SubElement(channel_element, 'display-name').text = channel_name
-            if channel_config.get('icon_url'):
-                SubElement(channel_element, 'icon', src=channel_config.get('icon_url'))
-            print(f"[{datetime.datetime.now()}] Added new channel definition for '{channel_name}'.")
-
-        last_program_end_time = now_utc
-        scheduled_video_ids = set()
-        if channel_id in existing_programs:
-            for program in existing_programs[channel_id]:
-                new_tv_element.append(program)
-                video_src_element = program.find('video')
-                if video_src_element is not None:
-                    video_src = video_src_element.get('src')
-                    if 'v=' in video_src:
-                        video_id = video_src.split('v=')[-1]
-                        scheduled_video_ids.add(video_id)
-                stop_time = datetime.datetime.strptime(program.get('stop'), '%Y%m%d%H%M%S %z')
-                if stop_time > last_program_end_time:
-                    last_program_end_time = stop_time
-        
-        print(f"[{datetime.datetime.now()}] Processing '{channel_name}'. Preserved {len(scheduled_video_ids)} future programs. New programs will start from {last_program_end_time}.")
-        
-        all_available_videos = []
-        min_duration = channel_config.get('min_duration')
-        max_duration = channel_config.get('max_duration')
-        sort_order = channel_config.get('sort_order', 'newest')
-        mixing_algorithm = channel_config.get('mixing_algorithm', 'concatenate')
-        global_max_videos_per_source = epg_config.get('max_videos_per_source', 50)
-        channel_max_videos = channel_config.get('max_videos_per_source', global_max_videos_per_source)
-        
-        source_channels_videos = []
-        for yt_channel_url in channel_config.get('youtube_channels', []):
-            source_channels_videos.append(fetch_videos(yt_channel_url, channel_max_videos, min_duration, max_duration))
-        
-        if mixing_algorithm == 'interleave':
-            max_len = max(len(v) for v in source_channels_videos) if source_channels_videos else 0
-            for i in range(max_len):
-                for videos in source_channels_videos:
-                    if i < len(videos):
-                        all_available_videos.append(videos[i])
+                        # Only preserve future programs if the strategy is 'roll'
+                        if refresh_strategy == 'roll':
+                            stop_time = datetime.datetime.strptime(program.get('stop'), '%Y%m%d%H%M%S %z')
+                            if stop_time > now_utc:
+                                new_tv_element.append(program)    
+            except ET.ParseError:
+                print(f"[{datetime.datetime.now()}] Could not parse existing EPG file. A new one will be created.", file=sys.stderr)
+    
+        # --- Step 2: Determine which channels to process ---
+        if target_channel_id:
+            channels_to_process = [c for c in all_channels if c['id'] == target_channel_id]
+            if not channels_to_process:
+                print(f"Error: Channel ID '{target_channel_id}' not found in config.yaml", file=sys.stderr)
+                # Still write out the preserved EPG data
+                tree = ElementTree(new_tv_element)
+                indent(tree, space="  ", level=0)
+                tree.write(output_file, encoding='UTF-8', xml_declaration=True)
+                return
         else:
-            for videos in source_channels_videos:
-                all_available_videos.extend(videos)
-
-        unscheduled_videos = [v for v in all_available_videos if v.get('id') not in scheduled_video_ids]
-        print(f"[{datetime.datetime.now()}] Fetched {len(all_available_videos)} total videos, {len(unscheduled_videos)} are new.")
-
-        if sort_order == 'oldest':
-            unscheduled_videos.sort(key=lambda x: x.get('upload_date', ''))
-        elif sort_order == 'random':
-            random.shuffle(unscheduled_videos)
-        else: # newest
-            unscheduled_videos.sort(key=lambda x: x.get('upload_date', ''), reverse=True)
-
-        publicity_videos = []
-        publicity_pool_name = channel_config.get('publicity_pool')
-        if publicity_pool_name and publicity_pool_name in publicity_pools:
-            publicity_pool_config = publicity_pools[publicity_pool_name]
-            pub_min_duration = publicity_pool_config.get('min_duration')
-            pub_max_duration = publicity_pool_config.get('max_duration')
-            pub_max_videos = publicity_pool_config.get('max_videos_per_source', global_max_videos_per_source)
-            for yt_channel_url in publicity_pool_config.get('youtube_channels', []):
-                publicity_videos.extend(fetch_videos(yt_channel_url, pub_max_videos, pub_min_duration, pub_max_duration, 'random'))
-        
-        new_playlist = interleave_playlist(unscheduled_videos, publicity_videos, channel_config.get('programs_per_publicity', 0))
-        generate_programme_elements(new_tv_element, channel_id, new_playlist, days_to_generate, last_program_end_time)
-
-    tree = ElementTree(new_tv_element)
-    indent(tree, space="  ", level=0)
-    tree.write(output_file, encoding='UTF-8', xml_declaration=True)
-    print(f"[{datetime.datetime.now()}] EPG generation complete.")
-
+            channels_to_process = all_channels
+    
+        # --- Step 3: Process channels and generate new programs ---
+        for channel_config in channels_to_process:
+            channel_id = channel_config['id']
+            channel_name = channel_config['name']
+    
+            # Add channel definition if it's missing (for new channels)
+            if new_tv_element.find(f'.//channel[@id="{channel_id}"]') is None:
+                channel_element = SubElement(new_tv_element, 'channel', id=channel_id)
+                SubElement(channel_element, 'display-name').text = channel_name
+                if channel_config.get('icon_url'):
+                    SubElement(channel_element, 'icon', src=channel_config.get('icon_url'))
+                print(f"[{datetime.datetime.now()}] Added new channel definition for '{channel_name}'.")
+    
+            # Determine the start time for new programs
+            last_program_end_time = now_utc
+            if not target_channel_id: # Only look for last program time in full refresh mode
+                for program in new_tv_element.findall(f'.//programme[@channel="{channel_id}"]'):
+                    stop_time = datetime.datetime.strptime(program.get('stop'), '%Y%m%d%H%M%S %z')
+                    if stop_time > last_program_end_time:
+                        last_program_end_time = stop_time
+    
+            # Get the set of already scheduled video IDs for this channel (in full refresh mode)
+            scheduled_video_ids = set()
+            if not target_channel_id:
+                for program in new_tv_element.findall(f'.//programme[@channel="{channel_id}"]'):
+                    video_src_element = program.find('video')
+                    if video_src_element is not None and 'v=' in video_src_element.get('src', ''):
+                        scheduled_video_ids.add(video_src_element.get('src').split('v=')[-1])
+    
+            print(f"[{datetime.datetime.now()}] Processing '{channel_name}'. New programs will start from {last_program_end_time}.")
+    
+            # Fetching and filtering logic (mostly unchanged)
+            all_available_videos = []
+            min_duration = channel_config.get('min_duration')
+            max_duration = channel_config.get('max_duration')
+            sort_order = channel_config.get('sort_order', 'newest')
+            match_title = channel_config.get('match_title')
+            date_after = channel_config.get('date_after')
+            date_before = channel_config.get('date_before')
+            mixing_algorithm = channel_config.get('mixing_algorithm', 'concatenate')
+            global_max_videos_per_source = epg_config.get('max_videos_per_source', 50)
+            channel_max_videos = channel_config.get('max_videos_per_source', global_max_videos_per_source)
+    
+            # Determine effective cache settings for this channel
+            cache_enabled = channel_config.get('cache', False)
+            cache_ttl_hours = channel_config.get('cache_ttl_hours', global_cache_ttl_hours)
+    
+            source_channels_videos = []
+            for yt_channel_url in channel_config.get('youtube_channels', []):
+                source_channels_videos.append(fetch_videos(yt_channel_url, channel_max_videos, min_duration, max_duration, sort_order, match_title, date_after, date_before, cache_enabled, cache_ttl_hours))
+    
+            if mixing_algorithm == 'interleave':
+                max_len = max(len(v) for v in source_channels_videos) if source_channels_videos else 0
+                for i in range(max_len):
+                    for videos in source_channels_videos:
+                        if i < len(videos):
+                            all_available_videos.append(videos[i])
+            else:
+                for videos in source_channels_videos:
+                    all_available_videos.extend(videos)
+    
+            unscheduled_videos = [v for v in all_available_videos if v and v.get('id') not in scheduled_video_ids]
+            print(f"[{datetime.datetime.now()}] Fetched {len(all_available_videos)} total videos, {len(unscheduled_videos)} are new.")
+    
+            if sort_order == 'oldest':
+                unscheduled_videos.sort(key=lambda x: x.get('upload_date', ''))
+            elif sort_order == 'random':
+                random.shuffle(unscheduled_videos)
+            else:  # newest
+                unscheduled_videos.sort(key=lambda x: x.get('upload_date', ''), reverse=True)
+    
+            publicity_videos = []
+            publicity_pool_name = channel_config.get('publicity_pool')
+            if publicity_pool_name and publicity_pool_name in publicity_pools:
+                publicity_pool_config = publicity_pools[publicity_pool_name]
+                pub_min_duration = publicity_pool_config.get('min_duration')
+                pub_max_duration = publicity_pool_config.get('max_duration')
+                pub_max_videos = publicity_pool_config.get('max_videos_per_source', global_max_videos_per_source)
+    
+                # Determine effective cache settings for publicity pool
+                pub_cache_enabled = publicity_pool_config.get('cache', False)
+                pub_cache_ttl_hours = publicity_pool_config.get('cache_ttl_hours', global_cache_ttl_hours)
+    
+                for yt_channel_url in publicity_pool_config.get('youtube_channels', []):
+                    fetched_ads = fetch_videos(yt_channel_url, pub_max_videos, pub_min_duration, pub_max_duration, 'random', None, None, None, pub_cache_enabled, pub_cache_ttl_hours)
+                    for ad in fetched_ads:
+                        ad['is_ad'] = True # Add the flag here
+                    publicity_videos.extend(fetched_ads)
+    
+            new_playlist = interleave_playlist(unscheduled_videos, publicity_videos, channel_config.get('programs_per_publicity', 0))
+            generate_programme_elements(new_tv_element, channel_id, new_playlist, days_to_generate, last_program_end_time)
+    
+        # --- Step 4: Write the final EPG to file ---
+        tree = ElementTree(new_tv_element)
+        indent(tree, space="  ", level=0)
+        tree.write(output_file, encoding='UTF-8', xml_declaration=True)
+        print(f"[{datetime.datetime.now()}] EPG generation complete.")
 def background_epg_generator():
     # Initial delay to allow the server to start up before the first EPG generation
     time.sleep(10)
@@ -406,11 +527,16 @@ def main():
     parser = argparse.ArgumentParser(description='PseudoTV Server.')
     parser.add_argument('--host', default='0.0.0.0', help='Host to bind the server to.')
     parser.add_argument('--port', type=int, default=5004, help='Port to run the server on.')
-    parser.add_argument('--create_epg_only', action='store_true', help='Generate the EPG and exit.')
+    parser.add_argument('--create-epg', action='store_true', help='Generate the full EPG and exit.')
+    parser.add_argument('--update-channel', type=str, help='Update the EPG for a specific channel ID and exit.')
     args = parser.parse_args()
 
-    if args.create_epg_only:
+    if args.create_epg:
         create_epg(CONFIG)
+        sys.exit(0)
+
+    if args.update_channel:
+        create_epg(CONFIG, target_channel_id=args.update_channel)
         sys.exit(0)
 
     epg_file_name = CONFIG.get('epg', {}).get('output_file', 'epg.xml')

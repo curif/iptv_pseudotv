@@ -1,3 +1,9 @@
 venv
 __pycache__
 *.pyc
+.git
+.gitignore
+README.md
+cache_*.json
+epg.xml
+--Frag*

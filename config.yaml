@@ -6,11 +6,16 @@ epg:
   # Max videos to fetch per YouTube source. Lower for faster EPG generation.
   max_videos_per_source: 20
 
+cache:
+  ttl_hours: 12 # Default cache TTL in hours
+
 publicity:
   general_ads:
     # Filter for ads between 15 seconds and 2 minutes
     min_duration: 15
     max_duration: 120
+    cache: true
+    cache_ttl_hours: 168 # 1 week
     youtube_channels:
       - "https://www.youtube.com/playlist?list=PL0E8CF42499A416D0"
       - "https://www.youtube.com/@publi456"
@@ -28,6 +33,7 @@ channels:
     sort_order: "oldest"
     programs_per_publicity: 3
     publicity_pool: "general_ads"
+    epg_refresh_strategy: 'rebuild' # Rebuild channel from scratch on every EPG refresh
     min_duration: 120
     max_duration: 1200
     output:
@@ -81,6 +87,27 @@ channels:
     youtube_channels:
       - "https://www.youtube.com/@Vevo"
 
+  - id: "80s-music-channel"
+    name: "80s Music Hits"
+    group_title: "Music"
+    icon_url: "https://i.imgur.com/J5z5Y8z.png"
+    quality: "best[height<=480]"
+    mixing_algorithm: "interleave"
+    sort_order: "random"
+    programs_per_publicity: 5
+    publicity_pool: "general_ads"
+    output:
+      resolution: "640x480"
+      framerate: 30
+      video_bitrate: "1.5M"
+      audio_bitrate: "128k"
+    youtube_channels:
+      - "https://www.youtube.com/@FlashbackGrooves"
+      - "https://www.youtube.com/@80sMusicHits63-w1f"
+      - "https://www.youtube.com/playlist?list=PL-Q2AV9dPI_vb2vT_t22A4i3a-o1-B42B"
+    cache: true # Enable caching for this channel
+    cache_ttl_hours: 168 # 1 week
+
   - id: "shorts-channel"
     name: "Shorts"
     group_title: "Entertainment"
@@ -99,3 +126,7 @@ channels:
       audio_bitrate: "128k"
     youtube_channels:
       - "https://www.youtube.com/@shootimpro"
+    match_title: "impro"
+    date_after: "now-1y"
+    cache: true # Enable caching for this channel
+    cache_ttl_hours: 12 # Override global TTL for this channel

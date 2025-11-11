@@ -29,6 +29,12 @@ This section controls the Electronic Program Guide generation.
 -   `refresh_interval_hours` (integer, default: `12`): How often (in hours) the EPG will be regenerated in the background.
 -   `max_videos_per_source` (integer, optional, default: `50`): The maximum number of videos to fetch from each YouTube channel source during EPG generation. Lowering this value can significantly speed up EPG generation.
 
+### `cache` Section
+
+This section configures the caching behavior for YouTube video metadata, significantly speeding up EPG generation by reducing repeated calls to YouTube.
+
+-   `ttl_hours` (integer, default: `0`): The default Time To Live (TTL) in hours for cached video metadata. If set to `0` or omitted, caching is effectively disabled globally.
+
 ### `publicity` Section
 
 This section defines pools of YouTube channels that will be used for publicity/ad videos.
@@ -38,6 +44,8 @@ This section defines pools of YouTube channels that will be used for publicity/a
     -   `max_duration` (integer, optional): Maximum duration (in seconds) for publicity videos to be considered.
     -   `youtube_channels` (list of strings): A list of YouTube channel URLs or handles (e.g., `https://www.youtube.com/@YourAdChannel`) from which to fetch publicity videos.
     -   `max_videos_per_source` (integer, optional): Overrides the global `epg.max_videos_per_source` for this specific publicity pool.
+    -   `cache` (boolean, optional, default: `false`): Set to `true` to enable caching for this publicity pool.
+    -   `cache_ttl_hours` (integer, optional): Overrides the global `cache.ttl_hours` for this specific publicity pool.
 
 ### `channels` Section
 
@@ -56,9 +64,19 @@ This is a list of your custom TV channels. Each item in the list represents one 
     -   `"random"`: Randomizes the order of videos.
 -   `programs_per_publicity` (integer, optional, default: `0`): After how many regular programs a random publicity video should be inserted. Set to `0` or omit for no publicity.
 -   `publicity_pool` (string, optional): The name of the publicity pool (defined in the `publicity` section) to use for this channel.
+-   `epg_refresh_strategy` (string, optional, default: `'roll'`): Determines how the channel's EPG is handled during a scheduled background refresh.
+    -   `'roll'`: Preserves future programs from the previous EPG, only adding new programs after the last scheduled event.
+    -   `'rebuild'`: Completely erases all existing programs for the channel and rebuilds the schedule from scratch. This is ideal for channels where content freshness is critical, like news.
 -   `min_duration` (integer, optional): Minimum duration (in seconds) for program videos to be considered.
 -   `max_duration` (integer, optional): Maximum duration (in seconds) for program videos to be considered.
 -   `max_videos_per_source` (integer, optional): Overrides the global `epg.max_videos_per_source` for this specific channel.
+-   `cache` (boolean, optional, default: `false`): Set to `true` to enable caching for this channel.
+-   `cache_ttl_hours` (integer, optional): Overrides the global `cache.ttl_hours` for this specific channel.
+-   `match_title` (string, optional): A case-insensitive regular expression to filter videos by their title. Only videos whose titles match this pattern will be included. For example, `impro` will match any video with "impro" in the title.
+-   `date_after` (string, optional): Filters videos to include only those uploaded after a specific date. The date can be in two formats:
+    -   **Absolute:** `YYYYMMDD` (e.g., `20230101` for January 1st, 2023).
+    -   **Relative:** A duration from the current time, such as `now-1y` (one year), `now-6m` (six months), or `now-3d` (three days).
+-   `date_before` (string, optional): Filters videos to include only those uploaded before a specific date. It follows the same formats as `date_after` (e.g., `20231231` or `now-1w`). Use `date_after` and `date_before` together to create a specific time window.
 -   `output` (object, **required**): Defines the stable output format for this channel's stream. All videos will be re-encoded to these specifications for consistent playback across IPTV clients.
     -   `resolution` (string, default: `"1280x720"`): The output video resolution (e.g., `"1920x1080"`, `"640x360"`).
     -   `framerate` (integer, default: `30`): The output video frame rate (e.g., `25`, `30`).
@@ -88,6 +106,20 @@ This is a list of your custom TV channels. Each item in the list represents one 
 3.  **Run the server:**
     ```bash
     venv/bin/python pseudotv.py
+    ```
+
+### Command-line Arguments
+
+The application accepts the following arguments for managing the EPG manually:
+
+-   `--create-epg`: Generates a completely new EPG for all channels based on your `config.yaml` and then exits.
+    ```bash
+    python pseudotv.py --create-epg
+    ```
+
+-   `--update-channel <channel_id>`: Recreates the schedule for a single, specific channel without affecting any other channels in the EPG. This is useful for refreshing one channel quickly. The existing schedule for the target channel will be cleared and replaced.
+    ```bash
+    python pseudotv.py --update-channel news-channel
     ```
 
 ### Docker Installation (with docker-compose)
@@ -123,23 +155,33 @@ This is the recommended method for running the server with Docker, as it makes m
     docker run -d -p 5004:5004 --name pseudotv pseudotv
     ```
 
-### Generating EPG with Docker
+### Manual EPG Generation
 
-You can generate the EPG once without starting the server, which is useful for initial setup or debugging.
+You can generate or update the EPG once without starting the full web server, which is useful for initial setup or debugging.
 
 **Using `docker-compose` (recommended):**
 
-```bash
-docker-compose run --rm pseudotv python pseudotv.py --create_epg_only
-```
+-   **Create the full EPG:**
+    ```bash
+    docker-compose run --rm pseudotv python pseudotv.py --create-epg
+    ```
+
+-   **Update a single channel:**
+    ```bash
+    docker-compose run --rm pseudotv python pseudotv.py --update-channel news-channel
+    ```
 
 **Using `docker run` (if not using docker-compose):**
 
-```bash
-docker run --rm -v $(pwd)/config.yaml:/app/config.yaml -v $(pwd):/app -e PSEUDOTV_CONFIG_PATH=/app/config.yaml pseudotv python pseudotv.py --create_epg_only
-```
+-   **Create the full EPG:**
+    ```bash
+    docker run --rm -v $(pwd)/config.yaml:/app/config.yaml -v $(pwd):/app -e PSEUDOTV_CONFIG_PATH=/app/config.yaml pseudotv python pseudotv.py --create-epg
+    ```
 
-This command will build the image (if necessary), run the EPG generation, and then remove the container.
+-   **Update a single channel:**
+    ```bash
+    docker run --rm -v $(pwd)/config.yaml:/app/config.yaml -v $(pwd):/app -e PSEUDOTV_CONFIG_PATH=/app/config.yaml pseudotv python pseudotv.py --update-channel news-channel
+    ```
 
 ## Accessing Your Channels
 
